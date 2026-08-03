@@ -12,20 +12,30 @@ const io = new Server(server, {
     }
 });
 
-let waitingPlayers = [];
+// Queues indexed by gridSize and isCoop
+// Example: queues["3_false"] = [...]
+let queues = {};
+
 let rooms = new Map();
 
 async function fetchRandomPixabayImage() {
-    const categories = ['nature', 'city', 'technology'];
+    const categories = ['nature', 'city', 'technology', 'animals', 'food'];
     const category = categories[Math.floor(Math.random() * categories.length)];
     const apiKey = '56917000-88229ea2b5f912f6f52a9039f';
     const url = `https://pixabay.com/api/?key=${apiKey}&q=${category}&image_type=photo&orientation=horizontal`;
 
     return new Promise((resolve) => {
-        https.get(url, (res) => {
+        const timeout = setTimeout(() => {
+            console.log("Pixabay request timed out, using fallback.");
+            request.abort();
+            resolve("https://picsum.photos/600/600");
+        }, 5000);
+
+        const request = https.get(url, (res) => {
             let data = '';
             res.on('data', (chunk) => { data += chunk; });
             res.on('end', () => {
+                clearTimeout(timeout);
                 try {
                     const json = JSON.parse(data);
                     if (json.hits && json.hits.length > 0) {
@@ -38,7 +48,10 @@ async function fetchRandomPixabayImage() {
                     resolve("https://picsum.photos/600/600");
                 }
             });
-        }).on("error", (err) => {
+        });
+
+        request.on("error", (err) => {
+            clearTimeout(timeout);
             resolve("https://picsum.photos/600/600");
         });
     });
@@ -47,16 +60,24 @@ async function fetchRandomPixabayImage() {
 io.on('connection', (socket) => {
     console.log('A user connected:', socket.id);
 
-    socket.on('join_queue', async (userData) => {
-        console.log('User joined queue:', userData.displayName);
-        socket.userData = userData;
-        waitingPlayers.push(socket);
+    socket.on('join_queue', async (data) => {
+        const { displayName, gridSize, isCoop } = data;
+        console.log(`User ${displayName} joined queue: gridSize=${gridSize}, isCoop=${isCoop}`);
 
-        if (waitingPlayers.length >= 2) {
-            const player1 = waitingPlayers.shift();
-            const player2 = waitingPlayers.shift();
+        socket.userData = { displayName, gridSize, isCoop };
+        const queueKey = `${gridSize}_${isCoop}`;
 
-            const roomId = `room_${player1.id}_${player2.id}`;
+        if (!queues[queueKey]) {
+            queues[queueKey] = [];
+        }
+
+        queues[queueKey].push(socket);
+
+        if (queues[queueKey].length >= 2) {
+            const player1 = queues[queueKey].shift();
+            const player2 = queues[queueKey].shift();
+
+            const roomId = `room_${Date.now()}_${player1.id}_${player2.id}`;
             player1.join(roomId);
             player2.join(roomId);
 
@@ -65,7 +86,8 @@ io.on('connection', (socket) => {
                 roomId: roomId,
                 imageUri: imageUri,
                 seed: Math.floor(Math.random() * 1000000),
-                gridSize: 3,
+                gridSize: gridSize,
+                isCoop: isCoop,
                 players: [
                     { id: player1.id, displayName: player1.userData.displayName },
                     { id: player2.id, displayName: player2.userData.displayName }
@@ -74,11 +96,12 @@ io.on('connection', (socket) => {
 
             rooms.set(roomId, {
                 players: [player1, player2],
-                progress: new Map()
+                isCoop: isCoop,
+                gridSize: gridSize
             });
 
             io.to(roomId).emit('start_game', gameData);
-            console.log('Game started in room:', roomId);
+            console.log(`Game started in room: ${roomId} (Mode: ${isCoop ? 'Co-op' : 'VS'})`);
         }
     });
 
@@ -90,26 +113,50 @@ io.on('connection', (socket) => {
         });
     });
 
+    socket.on('piece_moved', (data) => {
+        const { roomId, pieceId, row, col } = data;
+        // Broadcast the piece move to the partner in Co-op mode
+        socket.to(roomId).emit('partner_piece_moved', {
+            playerId: socket.id,
+            pieceId: pieceId,
+            row: row,
+            col: col
+        });
+    });
+
+    socket.on('chat_message', (data) => {
+        const { roomId, message } = data;
+        if (!socket.userData) return;
+        const chatData = {
+            senderId: socket.id,
+            senderName: socket.userData.displayName,
+            message: message,
+            timestamp: Date.now()
+        };
+        io.to(roomId).emit('chat_message', chatData);
+    });
+
     socket.on('game_won', (data) => {
         const { roomId } = data;
+        if (!socket.userData) return;
         io.to(roomId).emit('game_over', {
             winnerId: socket.id,
             winnerName: socket.userData.displayName
         });
+
         // Cleanup room
-        socket.leave(roomId);
         const room = rooms.get(roomId);
         if (room) {
-            room.players.forEach(p => {
-                if (p.id !== socket.id) p.leave(roomId);
-            });
+            room.players.forEach(p => p.leave(roomId));
             rooms.delete(roomId);
         }
     });
 
     socket.on('disconnect', () => {
         console.log('User disconnected:', socket.id);
-        waitingPlayers = waitingPlayers.filter(p => p.id !== socket.id);
+        for (let key in queues) {
+            queues[key] = queues[key].filter(p => p.id !== socket.id);
+        }
         // Handle disconnection in active rooms if needed
     });
 });
