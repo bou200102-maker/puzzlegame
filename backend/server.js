@@ -5,6 +5,11 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
+
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'ok' });
+});
+
 const io = new Server(server, {
     cors: {
         origin: "*",
