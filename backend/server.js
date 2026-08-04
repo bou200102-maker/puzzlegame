@@ -2,9 +2,12 @@ const express = require('express');
 const http = require('http');
 const https = require('https');
 const { Server } = require('socket.io');
+const { Groq } = require('groq-sdk');
 
 const app = express();
 const server = http.createServer(app);
+
+const groq = new Groq({ apiKey: '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' });
 
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok' });
@@ -113,6 +116,31 @@ async function fetchRandomPixabayImage() {
     });
 }
 
+async function getGroqChatReply(userMessage, language = 'en') {
+    let systemPrompt = "";
+    if (language === 'fr') {
+        systemPrompt = "You are a sophisticated and polite French gamer bot in 'Puzzle Clash'. Be slightly competitive but always charming. Reply in French.";
+    } else if (language === 'ar') {
+        systemPrompt = "You are a warm and hospitable Saudi gamer bot in 'Puzzle Clash'. Use friendly local idioms like 'Ya Hala'. Reply in Arabic.";
+    } else {
+        systemPrompt = "You are an energetic and friendly English-speaking gamer bot in 'Puzzle Clash'. You love puzzles and being helpful. Reply in English.";
+    }
+
+    try {
+        const completion = await groq.chat.completions.create({
+            messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: userMessage }
+            ],
+            model: "llama3-8b-8192",
+        });
+        return completion.choices[0]?.message?.content || "";
+    } catch (e) {
+        console.error("Groq API error:", e);
+        return "";
+    }
+}
+
 async function startMatch(player1, player2, gridSize, isCoop) {
     const queueKey = `${gridSize}_${isCoop}`;
     const roomId = `room_${Date.now()}_${player1.id}_${player2.id}`;
@@ -195,7 +223,7 @@ function startBotBehavior(bot, room) {
             message: message,
             timestamp: Date.now()
         });
-    }, 7000 + Math.random() * 3000);
+    }, 15000 + Math.random() * 10000);
 
     // Periodic Solving
     const solveInterval = setInterval(() => {
@@ -331,8 +359,8 @@ io.on('connection', (socket) => {
         io.to(roomId).emit('chat_message', chatData);
     });
 
-    socket.on('global_message', (data) => {
-        const { message, displayName } = data;
+    socket.on('global_message', async (data) => {
+        const { message, displayName, language } = data;
         const senderName = (socket.userData && socket.userData.displayName) || displayName || "Guest";
         io.emit('global_chat_message', {
             senderId: socket.id,
@@ -340,6 +368,57 @@ io.on('connection', (socket) => {
             message: message,
             timestamp: Date.now()
         });
+
+        // Groq reply logic
+        const allBotNames = [].concat(...Object.values(botNames));
+        const mentioned = allBotNames.some(name => message.toLowerCase().includes(name.toLowerCase()));
+        const chance = Math.random() < 0.15; // 15% chance for occasional reply
+
+        if (mentioned || chance) {
+            const replyLang = language || (socket.userData && socket.userData.language) || 'en';
+            const botReply = await getGroqChatReply(message, replyLang);
+            if (botReply) {
+                const botName = mentioned ? allBotNames.find(name => message.toLowerCase().includes(name.toLowerCase())) : "PuzzleMaster";
+                io.emit('global_chat_message', {
+                    senderId: 'groq_bot',
+                    senderName: `${botName} (AI)`,
+                    message: botReply,
+                    timestamp: Date.now()
+                });
+            }
+        }
+    });
+
+    socket.on('challenge_user', (data) => {
+        const { targetId, gridSize, isCoop } = data;
+        const senderName = (socket.userData && socket.userData.displayName) || "Guest";
+        io.to(targetId).emit('challenge_received', {
+            senderId: socket.id,
+            senderName: senderName,
+            gridSize: gridSize,
+            isCoop: isCoop
+        });
+    });
+
+    socket.on('accept_challenge', async (data) => {
+        const { inviterId, gridSize, isCoop } = data;
+        const inviterSocket = io.sockets.sockets.get(inviterId);
+        if (inviterSocket) {
+            if (!socket.userData) socket.userData = { displayName: "Guest", gridSize, isCoop };
+            if (!inviterSocket.userData) inviterSocket.userData = { displayName: "Guest", gridSize, isCoop };
+
+            const response = { inviterId: inviterId, accepterId: socket.id };
+            inviterSocket.emit('challenge_accepted', response);
+            socket.emit('challenge_accepted', response);
+
+            await startMatch(socket, inviterSocket, gridSize, isCoop);
+        }
+    });
+
+    socket.on('decline_challenge', (data) => {
+        const { inviterId } = data;
+        const senderName = (socket.userData && socket.userData.displayName) || "Guest";
+        io.to(inviterId).emit('challenge_declined', { declinerName: senderName });
     });
 
     socket.on('rematch_request', (data) => {
