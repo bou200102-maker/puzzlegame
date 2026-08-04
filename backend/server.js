@@ -332,11 +332,11 @@ io.on('connection', (socket) => {
     });
 
     socket.on('global_message', (data) => {
-        const { message } = data;
-        if (!socket.userData) return;
+        const { message, displayName } = data;
+        const senderName = (socket.userData && socket.userData.displayName) || displayName || "Guest";
         io.emit('global_chat_message', {
             senderId: socket.id,
-            senderName: socket.userData.displayName,
+            senderName: senderName,
             message: message,
             timestamp: Date.now()
         });
