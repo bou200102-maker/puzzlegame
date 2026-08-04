@@ -29,84 +29,164 @@ async function fetchRandomPixabayImage() {
     const apiKey = '56917000-88229ea2b5f912f6f52a9039f';
     const url = `https://pixabay.com/api/?key=${apiKey}&q=${category}&image_type=photo&orientation=horizontal`;
 
+    const fallback = "https://picsum.photos/600/600";
+
     return new Promise((resolve) => {
+        let resolved = false;
+        const safeResolve = (val) => {
+            if (!resolved) {
+                resolved = true;
+                resolve(val);
+            }
+        };
+
         const timeout = setTimeout(() => {
             console.log("Pixabay request timed out, using fallback.");
-            request.abort();
-            resolve("https://picsum.photos/600/600");
-        }, 5000);
-
-        const request = https.get(url, (res) => {
-            let data = '';
-            res.on('data', (chunk) => { data += chunk; });
-            res.on('end', () => {
-                clearTimeout(timeout);
+            if (request) {
                 try {
-                    const json = JSON.parse(data);
-                    if (json.hits && json.hits.length > 0) {
-                        const randomIndex = Math.floor(Math.random() * json.hits.length);
-                        resolve(json.hits[randomIndex].largeImageURL);
-                    } else {
-                        resolve("https://picsum.photos/600/600");
-                    }
+                    request.destroy();
                 } catch (e) {
-                    resolve("https://picsum.photos/600/600");
+                    console.error("Error destroying request during timeout:", e.message);
                 }
-            });
-        });
+            }
+            safeResolve(fallback);
+        }, 8000);
 
-        request.on("error", (err) => {
+        let request;
+        try {
+            request = https.get(url, (res) => {
+                let data = '';
+                res.on('data', (chunk) => { data += chunk; });
+                res.on('end', () => {
+                    clearTimeout(timeout);
+                    if (res.statusCode !== 200) {
+                        console.error(`Pixabay API returned status ${res.statusCode}`);
+                        safeResolve(fallback);
+                        return;
+                    }
+                    try {
+                        const json = JSON.parse(data);
+                        if (json.hits && json.hits.length > 0) {
+                            const randomIndex = Math.floor(Math.random() * json.hits.length);
+                            const imgUrl = json.hits[randomIndex].largeImageURL;
+                            safeResolve(imgUrl || fallback);
+                        } else {
+                            console.log("Pixabay API returned no hits, using fallback.");
+                            safeResolve(fallback);
+                        }
+                    } catch (e) {
+                        console.error("Error parsing Pixabay response:", e.message);
+                        safeResolve(fallback);
+                    }
+                });
+
+                res.on('error', (err) => {
+                    console.error("Response error from Pixabay:", err.message);
+                    clearTimeout(timeout);
+                    safeResolve(fallback);
+                });
+            });
+
+            request.on("error", (err) => {
+                console.error("Request error from Pixabay:", err.message);
+                clearTimeout(timeout);
+                safeResolve(fallback);
+            });
+        } catch (err) {
+            console.error("Exception during https.get setup:", err.message);
             clearTimeout(timeout);
-            resolve("https://picsum.photos/600/600");
-        });
+            safeResolve(fallback);
+        }
     });
 }
 
 io.on('connection', (socket) => {
     console.log('A user connected:', socket.id);
 
-    socket.on('join_queue', async (data) => {
-        const { displayName, gridSize, isCoop } = data;
-        console.log(`User ${displayName} joined queue: gridSize=${gridSize}, isCoop=${isCoop}`);
+    socket.on('search_match', async (data) => {
+        try {
+            if (!data) {
+                console.error("search_match: No data provided");
+                return;
+            }
+            const { displayName, gridSize, isCoop } = data;
+            console.log(`User ${displayName || socket.id} searching: gridSize=${gridSize}, isCoop=${isCoop}`);
 
-        socket.userData = { displayName, gridSize, isCoop };
-        const queueKey = `${gridSize}_${isCoop}`;
+            socket.userData = { displayName: displayName || "Guest", gridSize, isCoop };
+            const queueKey = `${gridSize}_${isCoop}`;
 
-        if (!queues[queueKey]) {
-            queues[queueKey] = [];
+            // Remove from all queues first to prevent being in multiple queues
+            for (let key in queues) {
+                queues[key] = queues[key].filter(p => p.id !== socket.id);
+            }
+            if (!queues[queueKey]) {
+                queues[queueKey] = [];
+            }
+            queues[queueKey].push(socket);
+
+            if (queues[queueKey].length >= 2) {
+                const player1 = queues[queueKey].shift();
+                const player2 = queues[queueKey].shift();
+
+                // If one of the players disconnected while in queue (race condition)
+                if (!player1.connected || !player2.connected) {
+                    console.log("One or more players disconnected during queue processing. Aborting match.");
+                    if (player1.connected) queues[queueKey].unshift(player1);
+                    if (player2.connected) queues[queueKey].unshift(player2);
+                    return;
+                }
+
+                const roomId = `room_${Date.now()}_${player1.id}_${player2.id}`;
+                player1.join(roomId);
+                player2.join(roomId);
+
+                console.log(`Fetching image for room ${roomId}...`);
+                const imageUri = await fetchRandomPixabayImage();
+
+                // Check again if they are still connected after the async fetch
+                if (!player1.connected || !player2.connected) {
+                    console.log(`Players disconnected during image fetch for room ${roomId}.`);
+                    if (player1.connected) {
+                        player1.leave(roomId);
+                        queues[queueKey].unshift(player1);
+                    }
+                    if (player2.connected) {
+                        player2.leave(roomId);
+                        queues[queueKey].unshift(player2);
+                    }
+                    return;
+                }
+
+                const gameData = {
+                    roomId: roomId,
+                    imageUri: imageUri,
+                    seed: Math.floor(Math.random() * 1000000),
+                    gridSize: gridSize,
+                    isCoop: isCoop,
+                    players: [
+                        { id: player1.id, displayName: player1.userData.displayName },
+                        { id: player2.id, displayName: player2.userData.displayName }
+                    ]
+                };
+
+                rooms.set(roomId, {
+                    players: [player1, player2],
+                    isCoop: isCoop,
+                    gridSize: gridSize
+                });
+
+                io.to(roomId).emit('start_game', gameData);
+                console.log(`Game started in room: ${roomId} (Mode: ${isCoop ? 'Co-op' : 'VS'})`);
+            }
+        } catch (err) {
+            console.error("Error in search_match handler:", err);
         }
+    });
 
-        queues[queueKey].push(socket);
-
-        if (queues[queueKey].length >= 2) {
-            const player1 = queues[queueKey].shift();
-            const player2 = queues[queueKey].shift();
-
-            const roomId = `room_${Date.now()}_${player1.id}_${player2.id}`;
-            player1.join(roomId);
-            player2.join(roomId);
-
-            const imageUri = await fetchRandomPixabayImage();
-            const gameData = {
-                roomId: roomId,
-                imageUri: imageUri,
-                seed: Math.floor(Math.random() * 1000000),
-                gridSize: gridSize,
-                isCoop: isCoop,
-                players: [
-                    { id: player1.id, displayName: player1.userData.displayName },
-                    { id: player2.id, displayName: player2.userData.displayName }
-                ]
-            };
-
-            rooms.set(roomId, {
-                players: [player1, player2],
-                isCoop: isCoop,
-                gridSize: gridSize
-            });
-
-            io.to(roomId).emit('start_game', gameData);
-            console.log(`Game started in room: ${roomId} (Mode: ${isCoop ? 'Co-op' : 'VS'})`);
+    socket.on('leave_queue', () => {
+        console.log(`User ${socket.id} requested to leave queue.`);
+        for (let key in queues) {
+            queues[key] = queues[key].filter(p => p.id !== socket.id);
         }
     });
 
@@ -162,7 +242,7 @@ io.on('connection', (socket) => {
         for (let key in queues) {
             queues[key] = queues[key].filter(p => p.id !== socket.id);
         }
-        // Handle disconnection in active rooms if needed
+        // Active room cleanup logic could be added here if needed
     });
 });
 
