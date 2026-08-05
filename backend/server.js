@@ -41,6 +41,63 @@ const botPhrases = {
     ar: ["بالتوفيق!", "لقد اقتربت!", "هذا ممتع!", "حركة جيدة!", "أوشكت على الانتهاء!"]
 };
 
+const BOT_PROFILES = {
+    "Speed Demon": {
+        speedMult: 0.5,
+        chatStyle: "Aggressive & Fast",
+        phrases: {
+            en: ["Too slow!", "I'm on fire!", "Can't catch me!", "Speed is everything!"],
+            fr: ["Trop lent!", "Je suis en feu!", "Tu ne m'attraperas pas!", "La vitesse c'est tout!"],
+            ar: ["بطيء جداً!", "أنا سريع كالبرق!", "لن تمسك بي!", "السرعة هي كل شيء!"]
+        }
+    },
+    "Trash Talker": {
+        speedMult: 1.0,
+        chatStyle: "Mocking",
+        phrases: {
+            en: ["Is that all you got?", "My grandma solves faster.", "Losing again?", "Git gud."],
+            fr: ["C'est tout ce que tu as ?", "Ma grand-mère résout plus vite.", "Encore perdu ?", "Améliore-toi."],
+            ar: ["هذا كل ما لديك؟", "جدتي تحل الألغاز أسرع منك.", "خسرت مرة أخرى؟", "تعلم كيف تلعب."]
+        }
+    },
+    "Casual Dad": {
+        speedMult: 1.5,
+        chatStyle: "Friendly & Puns",
+        phrases: {
+            en: ["Just having some fun!", "Puzzling, isn't it?", "Great job, sport!", "I think I've got it... maybe."],
+            fr: ["On s'amuse bien !", "C'est un vrai casse-tête, non ?", "Beau travail, champion !", "Je pense que je l'ai... peut-être."],
+            ar: ["مجرد بعض المرح!", "لغز محير، أليس كذلك؟", "عمل رائع يا بطل!", "أعتقد أنني وجدتها... ربما."]
+        }
+    },
+    "Competitive Kid": {
+        speedMult: 0.8,
+        chatStyle: "Energetic",
+        phrases: {
+            en: ["I'm gonna win!", "Let's gooo!", "No way!", "Did you see that?!"],
+            fr: ["Je vais gagner !", "C'est parti !", "Pas possible !", "Tu as vu ça ?!"],
+            ar: ["سأفوز!", "هيا بنا!", "مستحيل!", "هل رأيت ذلك؟!"]
+        }
+    },
+    "Silent Pro": {
+        speedMult: 0.6,
+        chatStyle: "Minimalist",
+        phrases: {
+            en: ["...", "GG.", "Focused."],
+            fr: ["...", "GG.", "Concentré."],
+            ar: ["...", "لعب جيد.", "مركز."]
+        }
+    },
+    "Helpful Player": {
+        speedMult: 1.2,
+        chatStyle: "Encouraging",
+        phrases: {
+            en: ["You're doing great!", "Almost there!", "Keep it up!", "Nice one!"],
+            fr: ["Tu t'en sors super bien !", "Presque fini !", "Continue comme ça !", "Bien joué !"],
+            ar: ["أنت تبلي بلاءً حسناً!", "لقد اقتربت!", "استمر!", "أحسنت!"]
+        }
+    }
+};
+
 // Queues indexed by gridSize and isCoop
 // Example: queues["3_false"] = [...]
 let queues = {};
@@ -263,6 +320,7 @@ async function startMatch(player1, player2, gridSize, isCoop, category) {
 
 function startBotBehavior(bot, room) {
     const { roomId, gridSize } = room;
+    const profile = bot.userData.profile || BOT_PROFILES["Casual Dad"];
     const language = bot.userData.language;
     const totalPieces = gridSize * gridSize;
     let solvedPieces = 0;
@@ -278,7 +336,7 @@ function startBotBehavior(bot, room) {
             clearInterval(chatInterval);
             return;
         }
-        const phrases = botPhrases[language];
+        const phrases = profile.phrases[language] || botPhrases[language];
         const message = phrases[Math.floor(Math.random() * phrases.length)];
         io.to(roomId).emit('chat_message', {
             senderId: bot.id,
@@ -289,6 +347,7 @@ function startBotBehavior(bot, room) {
     }, 15000 + Math.random() * 10000);
 
     // Periodic Solving
+    const botInterval = (4000 + Math.random() * 4000) * profile.speedMult;
     const solveInterval = setInterval(() => {
         if (!rooms.has(roomId)) {
             clearInterval(solveInterval);
@@ -319,7 +378,7 @@ function startBotBehavior(bot, room) {
             });
             handleGameEnd(roomId, bot.id);
         }
-    }, 4000 + Math.random() * 4000); // 4-8s per piece
+    }, botInterval);
 
     bot.intervals = [chatInterval, solveInterval];
 }
@@ -464,12 +523,18 @@ io.on('connection', (socket) => {
                 const lang = languages[Math.floor(Math.random() * languages.length)];
                 const botDisplayName = botNames[lang][Math.floor(Math.random() * botNames[lang].length)];
 
+                const profileKeys = Object.keys(BOT_PROFILES);
+                const randomProfileKey = profileKeys[Math.floor(Math.random() * profileKeys.length)];
+                const profile = BOT_PROFILES[randomProfileKey];
+
                 const bot = {
                     id: targetId,
                     userData: {
                         displayName: `${botDisplayName} (Bot)`,
                         isBot: true,
-                        language: lang
+                        language: lang,
+                        profile: profile,
+                        profileName: randomProfileKey
                     },
                     isBot: true,
                     connected: true,
@@ -578,11 +643,23 @@ io.on('connection', (socket) => {
 
         rooms.forEach((room, roomId) => {
             if (room.players.some(p => p.id === socket.id)) {
-                room.players.forEach(p => {
-                    if (p.isBot && p.intervals) {
-                        p.intervals.forEach(clearInterval);
+                const opponent = room.players.find(p => p.id !== socket.id);
+                if (opponent) {
+                    if (!opponent.isBot) {
+                        opponent.emit('opponent_left', {
+                            message: "Your opponent disconnected. You win by default!",
+                            winnerId: opponent.id
+                        });
+                        handleGameEnd(roomId, opponent.id);
                     }
-                });
+                    if (opponent.isBot && opponent.intervals) {
+                        opponent.intervals.forEach(clearInterval);
+                    }
+                }
+                console.log(`Leaver Penalty: User ${socket.id} left match ${roomId}`);
+                // Emit penalty info to clients if they track it
+                socket.broadcast.emit('leaver_penalty', { userId: socket.id, roomId: roomId });
+
                 rooms.delete(roomId);
             }
         });
@@ -593,9 +670,20 @@ async function createBotMatch(player, gridSize, isCoop, category) {
     console.log(`Player ${player.userData.displayName} waited 40s. Creating bot for category ${category}.`);
     const languages = ['en', 'fr', 'ar'];
     const lang = languages[Math.floor(Math.random() * languages.length)];
+
+    const profileKeys = Object.keys(BOT_PROFILES);
+    const randomProfileKey = profileKeys[Math.floor(Math.random() * profileKeys.length)];
+    const profile = BOT_PROFILES[randomProfileKey];
+
     const bot = {
         id: `bot_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-        userData: { displayName: `${botNames[lang][Math.floor(Math.random() * botNames[lang].length)]} (Bot)`, isBot: true, language: lang },
+        userData: {
+            displayName: `${botNames[lang][Math.floor(Math.random() * botNames[lang].length)]} (Bot)`,
+            isBot: true,
+            language: lang,
+            profile: profile,
+            profileName: randomProfileKey
+        },
         isBot: true,
         connected: true,
         join: (roomId) => {},
