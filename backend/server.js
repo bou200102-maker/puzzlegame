@@ -513,28 +513,28 @@ io.on('connection', (socket) => {
     });
 
     socket.on('challenge_user', (data) => {
-        if (!data || !data.targetId) return;
-        const { targetId, gridSize, isCoop } = data;
+        if (!data || !data.toUserId) return;
+        const { toUserId, gridSize, isCoop } = data;
         const senderName = (socket.userData && socket.userData.displayName) || "Guest";
 
-        console.log(`Challenge: ${senderName} challenges ${targetId} (Grid: ${gridSize}, Coop: ${isCoop})`);
+        console.log(`Challenge: ${senderName} challenges ${toUserId} (Grid: ${gridSize}, Coop: ${isCoop})`);
 
-        if (targetId.startsWith('bot_')) {
-            const delay = 3000 + Math.random() * 2000;
-            console.log(`Bot ${targetId} auto-accepting in ${Math.round(delay)}ms...`);
+        if (toUserId.startsWith('bot_') || toUserId === 'groq_bot') {
+            const delay = 5000;
+            console.log(`Bot ${toUserId} auto-accepting in ${delay}ms...`);
             setTimeout(async () => {
                 const languages = ['en', 'fr', 'ar'];
                 const lang = languages[Math.floor(Math.random() * languages.length)];
-                const botDisplayName = botNames[lang][Math.floor(Math.random() * botNames[lang].length)];
+                const botDisplayName = toUserId === 'groq_bot' ? "PuzzleMaster" : botNames[lang][Math.floor(Math.random() * botNames[lang].length)];
 
                 const profileKeys = Object.keys(BOT_PROFILES);
                 const randomProfileKey = profileKeys[Math.floor(Math.random() * profileKeys.length)];
                 const profile = BOT_PROFILES[randomProfileKey];
 
                 const bot = {
-                    id: targetId,
+                    id: toUserId,
                     userData: {
-                        displayName: `${botDisplayName} (Bot)`,
+                        displayName: toUserId === 'groq_bot' ? `${botDisplayName} (AI)` : `${botDisplayName} (Bot)`,
                         isBot: true,
                         language: lang,
                         profile: profile,
@@ -556,7 +556,7 @@ io.on('connection', (socket) => {
                 const response = {
                     challengeId: socket.id,
                     accepted: true,
-                    fromUserId: targetId
+                    fromUserId: toUserId
                 };
                 socket.emit('challenge_response', response);
 
@@ -565,7 +565,7 @@ io.on('connection', (socket) => {
             return;
         }
 
-        io.to(targetId).emit('challenge_received', {
+        io.to(toUserId).emit('challenge_received', {
             challengeId: socket.id,
             fromUserId: socket.id,
             fromUserName: senderName,
