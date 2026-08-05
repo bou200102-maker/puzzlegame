@@ -117,13 +117,14 @@ async function fetchRandomPixabayImage() {
 }
 
 async function getGroqChatReply(userMessage, language = 'en') {
-    let systemPrompt = "";
+    let systemPrompt = "You are a competitive and friendly gamer in the Global Chat of 'Puzzle Clash'. Use informal language, gamer slang, and occasionally emojis. Keep responses short and punchy.";
+
     if (language === 'fr') {
-        systemPrompt = "You are a sophisticated and polite French gamer bot in 'Puzzle Clash'. Be slightly competitive but always charming. Reply in French.";
+        systemPrompt += " Reply in French.";
     } else if (language === 'ar') {
-        systemPrompt = "You are a warm and hospitable Saudi gamer bot in 'Puzzle Clash'. Use friendly local idioms like 'Ya Hala'. Reply in Arabic.";
+        systemPrompt += " Reply in Arabic using friendly local idioms like 'Ya Hala'.";
     } else {
-        systemPrompt = "You are an energetic and friendly English-speaking gamer bot in 'Puzzle Clash'. You love puzzles and being helpful. Reply in English.";
+        systemPrompt += " Reply in English.";
     }
 
     try {
@@ -132,13 +133,65 @@ async function getGroqChatReply(userMessage, language = 'en') {
                 { role: "system", content: systemPrompt },
                 { role: "user", content: userMessage }
             ],
-            model: "llama3-8b-8192",
+            model: "llama-3.1-8b-instant",
         });
         return completion.choices[0]?.message?.content || "";
     } catch (e) {
         console.error("Groq API error:", e);
         return "";
     }
+}
+
+async function triggerBotToBotConversation() {
+    const languages = ['en', 'fr', 'ar'];
+    const lang = languages[Math.floor(Math.random() * languages.length)];
+    const possibleBots = botNames[lang];
+
+    const bot1Name = possibleBots[Math.floor(Math.random() * possibleBots.length)];
+    let bot2Name = possibleBots[Math.floor(Math.random() * possibleBots.length)];
+    while (bot1Name === bot2Name) {
+        bot2Name = possibleBots[Math.floor(Math.random() * possibleBots.length)];
+    }
+
+    const topics = [
+        "their latest puzzle match",
+        "reaching the top of the leaderboard",
+        "a tricky 5x5 grid they just solved",
+        "the new update of Puzzle Clash",
+        "challenging each other to a rematch",
+        "how fast they solved the last daily puzzle"
+    ];
+    const topic = topics[Math.floor(Math.random() * topics.length)];
+
+    console.log(`Bot conversation triggered: ${bot1Name} & ${bot2Name} about ${topic} in ${lang}`);
+
+    const firstMessage = await getGroqChatReply(`Start a short conversation with ${bot2Name} about ${topic}.`, lang);
+    if (firstMessage) {
+        io.emit('global_chat_message', {
+            senderId: `bot_${bot1Name}`,
+            senderName: `${bot1Name} (Bot)`,
+            message: firstMessage,
+            avatarUrl: `https://api.dicebear.com/9.x/avataaars/svg?seed=${bot1Name}`,
+            timestamp: Date.now()
+        });
+
+        setTimeout(async () => {
+            const secondMessage = await getGroqChatReply(`${bot1Name} said: "${firstMessage}". Reply to them as ${bot2Name} continuing the conversation about ${topic}. Keep it very short.`, lang);
+            if (secondMessage) {
+                io.emit('global_chat_message', {
+                    senderId: `bot_${bot2Name}`,
+                    senderName: `${bot2Name} (Bot)`,
+                    message: secondMessage,
+                    avatarUrl: `https://api.dicebear.com/9.x/avataaars/svg?seed=${bot2Name}`,
+                    timestamp: Date.now()
+                });
+            }
+        }, 8000 + Math.random() * 4000);
+    }
+
+    // Schedule next conversation (5-10 minutes)
+    const nextInterval = (5 + Math.random() * 5) * 60 * 1000;
+    setTimeout(triggerBotToBotConversation, nextInterval);
 }
 
 async function startMatch(player1, player2, gridSize, isCoop) {
@@ -383,6 +436,7 @@ io.on('connection', (socket) => {
                     senderId: 'groq_bot',
                     senderName: `${botName} (AI)`,
                     message: botReply,
+                    avatarUrl: `https://api.dicebear.com/9.x/avataaars/svg?seed=${botName}`,
                     timestamp: Date.now()
                 });
             }
@@ -511,4 +565,6 @@ setInterval(async () => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    // Start bot-to-bot conversations loop
+    setTimeout(triggerBotToBotConversation, 60000); // Wait 1 minute before starting the first one
 });
