@@ -1,3 +1,12 @@
+require('dotenv').config();
+
+if (!process.env.GROQ_API_KEY) {
+    console.warn("WARNING: GROQ_API_KEY is missing from environment variables.");
+}
+if (!process.env.PIXABAY_API_KEY) {
+    console.warn("WARNING: PIXABAY_API_KEY is missing from environment variables.");
+}
+
 const express = require('express');
 const http = require('http');
 const https = require('https');
@@ -7,7 +16,7 @@ const { Groq } = require('groq-sdk');
 const app = express();
 const server = http.createServer(app);
 
-const groq = new Groq({ apiKey: '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' });
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok' });
@@ -39,11 +48,11 @@ let queueEntryTimes = new Map(); // socket.id -> timestamp
 
 let rooms = new Map();
 
-async function fetchRandomPixabayImage() {
-    const categories = ['nature', 'city', 'technology', 'animals', 'food'];
-    const category = categories[Math.floor(Math.random() * categories.length)];
-    const apiKey = '56917000-88229ea2b5f912f6f52a9039f';
-    const url = `https://pixabay.com/api/?key=${apiKey}&q=${category}&image_type=photo&orientation=horizontal`;
+async function fetchRandomPixabayImage(categoryParam) {
+    const fallbackCategories = ['nature', 'city', 'technology', 'animals', 'food'];
+    const category = (categoryParam && categoryParam !== "Random") ? categoryParam : fallbackCategories[Math.floor(Math.random() * fallbackCategories.length)];
+    const apiKey = process.env.PIXABAY_API_KEY;
+    const url = `https://pixabay.com/api/?key=${apiKey}&q=${encodeURIComponent(category)}&image_type=photo&orientation=horizontal`;
 
     const fallback = "https://picsum.photos/600/600";
 
@@ -194,15 +203,15 @@ async function triggerBotToBotConversation() {
     setTimeout(triggerBotToBotConversation, nextInterval);
 }
 
-async function startMatch(player1, player2, gridSize, isCoop) {
-    const queueKey = `${gridSize}_${isCoop}`;
+async function startMatch(player1, player2, gridSize, isCoop, category) {
+    const queueKey = `${gridSize}_${isCoop}_${category || 'Random'}`;
     const roomId = `room_${Date.now()}_${player1.id}_${player2.id}`;
 
     if (!player1.isBot) player1.join(roomId);
     if (!player2.isBot) player2.join(roomId);
 
-    console.log(`Fetching image for room ${roomId}...`);
-    const imageUri = await fetchRandomPixabayImage();
+    console.log(`Fetching image for room ${roomId} (Category: ${category})...`);
+    const imageUri = await fetchRandomPixabayImage(category);
 
     // Check again if real players are still connected
     if ((!player1.isBot && !player1.connected) || (!player2.isBot && !player2.connected)) {
@@ -234,6 +243,7 @@ async function startMatch(player1, player2, gridSize, isCoop) {
         players: [player1, player2],
         isCoop: isCoop,
         gridSize: gridSize,
+        category: category,
         roomId: roomId,
         startTime: Date.now(),
         rematchRequests: new Set()
@@ -346,11 +356,11 @@ io.on('connection', (socket) => {
                 console.error("search_match: No data provided");
                 return;
             }
-            const { displayName, gridSize, isCoop } = data;
-            console.log(`User ${displayName || socket.id} searching: gridSize=${gridSize}, isCoop=${isCoop}`);
+            const { displayName, gridSize, isCoop, category } = data;
+            console.log(`User ${displayName || socket.id} searching: gridSize=${gridSize}, isCoop=${isCoop}, category=${category}`);
 
-            socket.userData = { displayName: displayName || "Guest", gridSize, isCoop, isBot: false };
-            const queueKey = `${gridSize}_${isCoop}`;
+            socket.userData = { displayName: displayName || "Guest", gridSize, isCoop, category: category || "Random", isBot: false };
+            const queueKey = `${gridSize}_${isCoop}_${category || 'Random'}`;
 
             for (let key in queues) {
                 queues[key] = queues[key].filter(p => p.id !== socket.id);
@@ -367,7 +377,7 @@ io.on('connection', (socket) => {
                 queueEntryTimes.delete(player1.id);
                 queueEntryTimes.delete(player2.id);
 
-                await startMatch(player1, player2, gridSize, isCoop);
+                await startMatch(player1, player2, gridSize, isCoop, category);
             }
         } catch (err) {
             console.error("Error in search_match handler:", err);
@@ -446,33 +456,79 @@ io.on('connection', (socket) => {
     socket.on('challenge_user', (data) => {
         const { targetId, gridSize, isCoop } = data;
         const senderName = (socket.userData && socket.userData.displayName) || "Guest";
+
+        if (targetId && targetId.startsWith('bot_')) {
+            console.log(`Bot ${targetId} challenged by ${senderName}. Auto-accepting in 8s...`);
+            setTimeout(async () => {
+                const languages = ['en', 'fr', 'ar'];
+                const lang = languages[Math.floor(Math.random() * languages.length)];
+                const botDisplayName = botNames[lang][Math.floor(Math.random() * botNames[lang].length)];
+
+                const bot = {
+                    id: targetId,
+                    userData: {
+                        displayName: `${botDisplayName} (Bot)`,
+                        isBot: true,
+                        language: lang
+                    },
+                    isBot: true,
+                    connected: true,
+                    join: (roomId) => {},
+                    leave: (roomId) => {},
+                    emit: (event, data) => {},
+                    to: (roomId) => ({ emit: (event, data) => {} })
+                };
+
+                if (!socket.userData) socket.userData = { displayName: senderName, gridSize, isCoop };
+
+                const response = {
+                    challengeId: socket.id,
+                    accepted: true,
+                    fromUserId: targetId
+                };
+                socket.emit('challenge_response', response);
+
+                await startMatch(socket, bot, gridSize || 3, isCoop || false, "Random");
+            }, 8000);
+            return;
+        }
+
         io.to(targetId).emit('challenge_received', {
-            senderId: socket.id,
-            senderName: senderName,
+            challengeId: socket.id,
+            fromUserId: socket.id,
+            fromUserName: senderName,
             gridSize: gridSize,
             isCoop: isCoop
         });
     });
 
     socket.on('accept_challenge', async (data) => {
-        const { inviterId, gridSize, isCoop } = data;
+        const { inviterId, gridSize, isCoop, category } = data;
         const inviterSocket = io.sockets.sockets.get(inviterId);
         if (inviterSocket) {
-            if (!socket.userData) socket.userData = { displayName: "Guest", gridSize, isCoop };
-            if (!inviterSocket.userData) inviterSocket.userData = { displayName: "Guest", gridSize, isCoop };
+            if (!socket.userData) socket.userData = { displayName: "Guest", gridSize, isCoop, category: category || "Random" };
+            if (!inviterSocket.userData) inviterSocket.userData = { displayName: "Guest", gridSize, isCoop, category: category || "Random" };
 
-            const response = { inviterId: inviterId, accepterId: socket.id };
-            inviterSocket.emit('challenge_accepted', response);
-            socket.emit('challenge_accepted', response);
+            const response = {
+                challengeId: inviterId,
+                accepted: true,
+                fromUserId: socket.id
+            };
+            inviterSocket.emit('challenge_response', response);
+            socket.emit('challenge_response', response);
 
-            await startMatch(socket, inviterSocket, gridSize, isCoop);
+            await startMatch(socket, inviterSocket, gridSize, isCoop, category || "Random");
         }
     });
 
     socket.on('decline_challenge', (data) => {
         const { inviterId } = data;
         const senderName = (socket.userData && socket.userData.displayName) || "Guest";
-        io.to(inviterId).emit('challenge_declined', { declinerName: senderName });
+        io.to(inviterId).emit('challenge_response', {
+             challengeId: inviterId,
+             accepted: false,
+             fromUserId: socket.id
+        });
     });
 
     socket.on('rematch_request', (data) => {
@@ -484,16 +540,20 @@ io.on('connection', (socket) => {
 
         const hasBot = room.players.some(p => p.isBot);
         if (hasBot) {
+             // Bot "accepts" rematch immediately
+             const bot = room.players.find(p => p.isBot);
+             io.to(roomId).emit('rematch_request', { senderId: bot.id });
+
              setTimeout(() => {
                  if (rooms.has(roomId)) {
-                     startMatch(room.players[0], room.players[1], room.gridSize, room.isCoop);
+                     startMatch(room.players[0], room.players[1], room.gridSize, room.isCoop, room.category);
                  }
              }, 1000);
              return;
         }
 
         if (room.rematchRequests.size === room.players.length) {
-            startMatch(room.players[0], room.players[1], room.gridSize, room.isCoop);
+            startMatch(room.players[0], room.players[1], room.gridSize, room.isCoop, room.category);
         }
     });
 
@@ -529,6 +589,24 @@ io.on('connection', (socket) => {
     });
 });
 
+async function createBotMatch(player, gridSize, isCoop, category) {
+    console.log(`Player ${player.userData.displayName} waited 40s. Creating bot for category ${category}.`);
+    const languages = ['en', 'fr', 'ar'];
+    const lang = languages[Math.floor(Math.random() * languages.length)];
+    const bot = {
+        id: `bot_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+        userData: { displayName: `${botNames[lang][Math.floor(Math.random() * botNames[lang].length)]} (Bot)`, isBot: true, language: lang },
+        isBot: true,
+        connected: true,
+        join: (roomId) => {},
+        leave: (roomId) => {},
+        emit: (event, data) => {},
+        to: (roomId) => ({ emit: (event, data) => {} })
+    };
+
+    await startMatch(player, bot, gridSize, isCoop, category);
+}
+
 // Bot Queue Watcher
 setInterval(async () => {
     const now = Date.now();
@@ -541,22 +619,8 @@ setInterval(async () => {
                 queues[key].shift();
                 queueEntryTimes.delete(player.id);
 
-                console.log(`Player ${player.userData.displayName} waited 40s. Creating bot.`);
-                const languages = ['en', 'fr', 'ar'];
-                const lang = languages[Math.floor(Math.random() * languages.length)];
-                const bot = {
-                    id: `bot_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-                    userData: { displayName: `${botNames[lang][Math.floor(Math.random() * botNames[lang].length)]} (Bot)`, isBot: true, language: lang },
-                    isBot: true,
-                    connected: true,
-                    join: (roomId) => {},
-                    leave: (roomId) => {},
-                    emit: (event, data) => {},
-                    to: (roomId) => ({ emit: (event, data) => {} })
-                };
-
-                const [gridSize, isCoopStr] = key.split('_');
-                await startMatch(player, bot, parseInt(gridSize), isCoopStr === 'true');
+                const [gridSize, isCoopStr, category] = key.split('_');
+                await createBotMatch(player, parseInt(gridSize), isCoopStr === 'true', category);
             }
         }
     }
