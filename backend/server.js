@@ -513,11 +513,15 @@ io.on('connection', (socket) => {
     });
 
     socket.on('challenge_user', (data) => {
+        if (!data || !data.targetId) return;
         const { targetId, gridSize, isCoop } = data;
         const senderName = (socket.userData && socket.userData.displayName) || "Guest";
 
-        if (targetId && targetId.startsWith('bot_')) {
-            console.log(`Bot ${targetId} challenged by ${senderName}. Auto-accepting in 8s...`);
+        console.log(`Challenge: ${senderName} challenges ${targetId} (Grid: ${gridSize}, Coop: ${isCoop})`);
+
+        if (targetId.startsWith('bot_')) {
+            const delay = 3000 + Math.random() * 2000;
+            console.log(`Bot ${targetId} auto-accepting in ${Math.round(delay)}ms...`);
             setTimeout(async () => {
                 const languages = ['en', 'fr', 'ar'];
                 const lang = languages[Math.floor(Math.random() * languages.length)];
@@ -544,7 +548,10 @@ io.on('connection', (socket) => {
                     to: (roomId) => ({ emit: (event, data) => {} })
                 };
 
-                if (!socket.userData) socket.userData = { displayName: senderName, gridSize, isCoop };
+                // Ensure challenger has basic userData if missing
+                if (!socket.userData) {
+                    socket.userData = { displayName: senderName, gridSize: gridSize || 3, isCoop: isCoop || false };
+                }
 
                 const response = {
                     challengeId: socket.id,
@@ -554,7 +561,7 @@ io.on('connection', (socket) => {
                 socket.emit('challenge_response', response);
 
                 await startMatch(socket, bot, gridSize || 3, isCoop || false, "Random");
-            }, 8000);
+            }, delay);
             return;
         }
 
