@@ -104,6 +104,7 @@ let queues = {};
 let queueEntryTimes = new Map(); // socket.id -> timestamp
 
 let rooms = new Map();
+let userIdToSocketId = new Map();
 
 async function fetchRandomPixabayImage(categoryParam) {
     const fallbackCategories = ['nature', 'city', 'technology', 'animals', 'food'];
@@ -415,8 +416,13 @@ io.on('connection', (socket) => {
                 console.error("search_match: No data provided");
                 return;
             }
-            const { displayName, gridSize, isCoop, category } = data;
-            console.log(`User ${displayName || socket.id} searching: gridSize=${gridSize}, isCoop=${isCoop}, category=${category}`);
+            const { displayName, gridSize, isCoop, category, uid } = data;
+            console.log(`User ${displayName || socket.id} (UID: ${uid}) searching: gridSize=${gridSize}, isCoop=${isCoop}, category=${category}`);
+
+            if (uid) {
+                userIdToSocketId.set(uid, socket.id);
+                socket.uid = uid;
+            }
 
             socket.userData = { displayName: displayName || "Guest", gridSize, isCoop, category: category || "Random", isBot: false };
             const queueKey = `${gridSize}_${isCoop}_${category || 'Random'}`;
@@ -514,8 +520,13 @@ io.on('connection', (socket) => {
 
     socket.on('challenge_user', (data) => {
         if (!data || !data.toUserId) return;
-        const { toUserId, gridSize, isCoop } = data;
+        const { toUserId, gridSize, isCoop, uid } = data;
         const senderName = (socket.userData && socket.userData.displayName) || "Guest";
+
+        if (uid) {
+            userIdToSocketId.set(uid, socket.id);
+            socket.uid = uid;
+        }
 
         console.log(`Challenge: ${senderName} challenges ${toUserId} (Grid: ${gridSize}, Coop: ${isCoop})`);
 
@@ -565,13 +576,20 @@ io.on('connection', (socket) => {
             return;
         }
 
-        io.to(toUserId).emit('challenge_received', {
-            challengeId: socket.id,
-            fromUserId: socket.id,
-            fromUserName: senderName,
-            gridSize: gridSize,
-            isCoop: isCoop
-        });
+        const targetSocketId = userIdToSocketId.get(toUserId) || toUserId;
+        const targetSocket = io.sockets.sockets.get(targetSocketId);
+
+        if (targetSocket) {
+            targetSocket.emit('challenge_received', {
+                challengeId: socket.id,
+                fromUserId: socket.id,
+                fromUserName: senderName,
+                gridSize: gridSize,
+                isCoop: isCoop
+            });
+        } else {
+            console.log(`Challenge target ${toUserId} (Socket: ${targetSocketId}) not found.`);
+        }
     });
 
     socket.on('accept_challenge', async (data) => {
@@ -643,6 +661,11 @@ io.on('connection', (socket) => {
 
     socket.on('disconnect', () => {
         console.log('User disconnected:', socket.id);
+
+        if (socket.uid && userIdToSocketId.get(socket.uid) === socket.id) {
+            userIdToSocketId.delete(socket.uid);
+        }
+
         for (let key in queues) {
             queues[key] = queues[key].filter(p => p.id !== socket.id);
         }
