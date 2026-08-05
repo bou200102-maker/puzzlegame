@@ -410,6 +410,15 @@ function handleGameEnd(roomId, winnerId) {
 io.on('connection', (socket) => {
     console.log('A user connected:', socket.id);
 
+    socket.on('register_uid', (data) => {
+        const { uid } = data;
+        if (uid) {
+            userIdToSocketId.set(uid, socket.id);
+            socket.uid = uid;
+            console.log(`User ${uid} registered with socket ${socket.id}`);
+        }
+    });
+
     socket.on('search_match', async (data) => {
         try {
             if (!data) {
@@ -521,14 +530,16 @@ io.on('connection', (socket) => {
     socket.on('challenge_user', (data) => {
         if (!data || !data.toUserId) return;
         const { toUserId, gridSize, isCoop, uid } = data;
-        const senderName = (socket.userData && socket.userData.displayName) || "Guest";
 
         if (uid) {
             userIdToSocketId.set(uid, socket.id);
             socket.uid = uid;
         }
 
-        console.log(`Challenge: ${senderName} challenges ${toUserId} (Grid: ${gridSize}, Coop: ${isCoop})`);
+        const senderName = (socket.userData && socket.userData.displayName) || "Guest";
+        const senderId = socket.uid || socket.id;
+
+        console.log(`Challenge: ${senderName} (${senderId}) challenges ${toUserId} (Grid: ${gridSize}, Coop: ${isCoop})`);
 
         if (toUserId.startsWith('bot_') || toUserId === 'groq_bot') {
             const delay = 5000;
@@ -582,10 +593,11 @@ io.on('connection', (socket) => {
         if (targetSocket) {
             targetSocket.emit('challenge_received', {
                 challengeId: socket.id,
-                fromUserId: socket.id,
+                fromUserId: senderId,
                 fromUserName: senderName,
-                gridSize: gridSize,
-                isCoop: isCoop
+                gridSize: gridSize || 3,
+                isCoop: isCoop || false,
+                category: data.category || "Random"
             });
         } else {
             console.log(`Challenge target ${toUserId} (Socket: ${targetSocketId}) not found.`);
@@ -594,10 +606,14 @@ io.on('connection', (socket) => {
 
     socket.on('accept_challenge', async (data) => {
         const { inviterId, gridSize, isCoop, category } = data;
+        const finalGridSize = gridSize || 3;
+        const finalIsCoop = isCoop || false;
+        const finalCategory = category || "Random";
+
         const inviterSocket = io.sockets.sockets.get(inviterId);
         if (inviterSocket) {
-            if (!socket.userData) socket.userData = { displayName: "Guest", gridSize, isCoop, category: category || "Random" };
-            if (!inviterSocket.userData) inviterSocket.userData = { displayName: "Guest", gridSize, isCoop, category: category || "Random" };
+            if (!socket.userData) socket.userData = { displayName: "Guest", gridSize: finalGridSize, isCoop: finalIsCoop, category: finalCategory };
+            if (!inviterSocket.userData) inviterSocket.userData = { displayName: "Guest", gridSize: finalGridSize, isCoop: finalIsCoop, category: finalCategory };
 
             const response = {
                 challengeId: inviterId,
@@ -607,7 +623,7 @@ io.on('connection', (socket) => {
             inviterSocket.emit('challenge_response', response);
             socket.emit('challenge_response', response);
 
-            await startMatch(socket, inviterSocket, gridSize, isCoop, category || "Random");
+            await startMatch(socket, inviterSocket, finalGridSize, finalIsCoop, finalCategory);
         }
     });
 
