@@ -475,12 +475,14 @@ io.on('connection', (socket) => {
     });
 
     socket.on('piece_moved', (data) => {
-        const { roomId, pieceId, row, col } = data;
+        const { roomId, pieceId, fromRow, fromCol, toRow, toCol } = data;
         socket.to(roomId).emit('partner_piece_moved', {
             playerId: socket.id,
             pieceId: pieceId,
-            row: row,
-            col: col
+            fromRow: fromRow,
+            fromCol: fromCol,
+            toRow: toRow,
+            toCol: toCol
         });
     });
 
