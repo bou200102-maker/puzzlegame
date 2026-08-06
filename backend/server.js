@@ -610,7 +610,11 @@ io.on('connection', (socket) => {
         const finalIsCoop = isCoop || false;
         const finalCategory = category || "Random";
 
-        const inviterSocket = io.sockets.sockets.get(inviterId);
+        const targetSocketId = userIdToSocketId.get(inviterId) || inviterId;
+        const inviterSocket = io.sockets.sockets.get(targetSocketId);
+
+        console.log(`Routing response to inviter: ${targetSocketId}`);
+
         if (inviterSocket) {
             if (!socket.userData) socket.userData = { displayName: "Guest", gridSize: finalGridSize, isCoop: finalIsCoop, category: finalCategory };
             if (!inviterSocket.userData) inviterSocket.userData = { displayName: "Guest", gridSize: finalGridSize, isCoop: finalIsCoop, category: finalCategory };
@@ -618,7 +622,7 @@ io.on('connection', (socket) => {
             const response = {
                 challengeId: inviterId,
                 accepted: true,
-                fromUserId: socket.id
+                fromUserId: socket.uid || socket.id
             };
             inviterSocket.emit('challenge_response', response);
             socket.emit('challenge_response', response);
@@ -629,11 +633,13 @@ io.on('connection', (socket) => {
 
     socket.on('decline_challenge', (data) => {
         const { inviterId } = data;
-        const senderName = (socket.userData && socket.userData.displayName) || "Guest";
-        io.to(inviterId).emit('challenge_response', {
+        const targetSocketId = userIdToSocketId.get(inviterId) || inviterId;
+        console.log(`Routing response to inviter: ${targetSocketId}`);
+
+        io.to(targetSocketId).emit('challenge_response', {
              challengeId: inviterId,
              accepted: false,
-             fromUserId: socket.id
+             fromUserId: socket.uid || socket.id
         });
     });
 
