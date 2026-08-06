@@ -543,7 +543,7 @@ io.on('connection', (socket) => {
 
         if (toUserId.startsWith('bot_') || toUserId === 'groq_bot') {
             const delay = 5000;
-            console.log(`Bot ${toUserId} auto-accepting in ${delay}ms...`);
+            console.log(`Bot ${toUserId} auto-accepting in ${delay}ms... (Grid: ${gridSize})`);
             setTimeout(async () => {
                 const languages = ['en', 'fr', 'ar'];
                 const lang = languages[Math.floor(Math.random() * languages.length)];
@@ -570,9 +570,11 @@ io.on('connection', (socket) => {
                     to: (roomId) => ({ emit: (event, data) => {} })
                 };
 
+                const challengeGridSize = parseInt(gridSize) || 3;
+
                 // Ensure challenger has basic userData if missing
                 if (!socket.userData) {
-                    socket.userData = { displayName: senderName, gridSize: gridSize || 3, isCoop: isCoop || false };
+                    socket.userData = { displayName: senderName, gridSize: challengeGridSize, isCoop: isCoop || false };
                 }
 
                 const response = {
@@ -582,7 +584,7 @@ io.on('connection', (socket) => {
                 };
                 socket.emit('challenge_response', response);
 
-                await startMatch(socket, bot, gridSize || 3, isCoop || false, "Random");
+                await startMatch(socket, bot, challengeGridSize, isCoop || false, data.category || "Random");
             }, delay);
             return;
         }
