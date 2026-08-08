@@ -183,6 +183,82 @@ async function fetchRandomPixabayImage(categoryParam) {
     });
 }
 
+/**
+ * Daily Challenge Helpers
+ */
+const dailyPuzzleCache = { date: null, data: null };
+
+function getSeedFromDate(dateStr) {
+    let hash = 0;
+    for (let i = 0; i < dateStr.length; i++) {
+        hash = (hash << 5) - hash + dateStr.charCodeAt(i);
+        hash |= 0;
+    }
+    return Math.abs(hash);
+}
+
+async function fetchDailyPuzzle(dateStr) {
+    if (dailyPuzzleCache.date === dateStr && dailyPuzzleCache.data) {
+        return dailyPuzzleCache.data;
+    }
+
+    const seed = getSeedFromDate(dateStr);
+    const categories = ["nature", "architecture", "travel", "animals", "food", "objects", "textures", "backgrounds"];
+    const category = categories[seed % categories.length];
+    const apiKey = process.env.PIXABAY_API_KEY;
+    const url = `https://pixabay.com/api/?key=${apiKey}&q=${encodeURIComponent(category)}&image_type=photo&orientation=horizontal&min_width=1200&per_page=50&safesearch=true`;
+
+    const fallback = `https://picsum.photos/seed/${dateStr}/800/600`;
+
+    return new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+            console.log("Daily Pixabay request timed out, using fallback.");
+            resolve({
+                imageUri: fallback,
+                seed: seed,
+                gridSize: 4 + (seed % 2)
+            });
+        }, 8000);
+
+        https.get(url, (res) => {
+            let data = '';
+            res.on('data', (chunk) => { data += chunk; });
+            res.on('end', () => {
+                clearTimeout(timeout);
+                let imgUrl = fallback;
+                if (res.statusCode === 200) {
+                    try {
+                        const json = JSON.parse(data);
+                        if (json.hits && json.hits.length > 0) {
+                            const index = seed % json.hits.length;
+                            imgUrl = json.hits[index].largeImageURL || json.hits[index].webformatURL || fallback;
+                        }
+                    } catch (e) {
+                        console.error("Error parsing Pixabay response for daily puzzle:", e.message);
+                    }
+                }
+
+                const dailyData = {
+                    imageUri: imgUrl,
+                    seed: seed,
+                    gridSize: 4 + (seed % 2)
+                };
+                dailyPuzzleCache.date = dateStr;
+                dailyPuzzleCache.data = dailyData;
+                resolve(dailyData);
+            });
+        }).on("error", (err) => {
+            clearTimeout(timeout);
+            console.error("Request error from Pixabay for daily puzzle:", err.message);
+            resolve({
+                imageUri: fallback,
+                seed: seed,
+                gridSize: 4 + (seed % 2)
+            });
+        });
+    });
+}
+
 async function getGroqChatReply(userMessage, language = 'en') {
     let systemPrompt = "You are a competitive and friendly gamer in the Global Chat of 'Puzzle Clash'. Use informal language, gamer slang, and occasionally emojis. Keep responses short and punchy.";
 
@@ -419,6 +495,13 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('get_daily_puzzle', async () => {
+        const today = new Date().toISOString().split('T')[0];
+        console.log(`User ${socket.id} requested daily puzzle for ${today}`);
+        const dailyData = await fetchDailyPuzzle(today);
+        socket.emit('daily_puzzle_data', dailyData);
+    });
+
     socket.on('search_match', async (data) => {
         try {
             if (!data) {
@@ -496,6 +579,16 @@ io.on('connection', (socket) => {
             timestamp: Date.now()
         };
         io.to(roomId).emit('chat_message', chatData);
+    });
+
+    socket.on('send_emote', (data) => {
+        const { roomId, emoteId } = data;
+        const emoteData = {
+            senderId: socket.id,
+            emoteId: emoteId,
+            timestamp: Date.now()
+        };
+        io.to(roomId).emit('emote_received', emoteData);
     });
 
     socket.on('global_message', async (data) => {
